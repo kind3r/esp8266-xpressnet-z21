@@ -2,20 +2,15 @@
    Aim of this project is to create a z21 to xpressnet interface on esp8266
 
    Credits:
-   - z21 lib created by pgahtow http://pgahtow.de/wiki/index.php?title=Z21_mobile but modifed to include support for esp8266 EEPROM
-   - xpressnet lib created by pgahtow http://pgahtow.de/wiki/index.php?title=XpressNet
-
-   We need to connect the some RS485 module via a software serial for 2 reasons:
-   1. esp8266 HardwareSerial does not support 9 bit
-   2. We need the HardwareSerial for debugging
-   For this, we create a special 9 bit software serial.
+   - z21 lib created by Philipp Gahtow http://pgahtow.de/wiki/index.php?title=Z21_mobile but modifed to include support for esp8266 EEPROM
+   - xpressnet lib created by Philipp Gahtow http://pgahtow.de/wiki/index.php?title=XpressNet
+   - SoftwareSerial lib for esp8266 https://github.com/plerup/espsoftwareserial modified into https://github.com/kind3r/espsoftwareRS485 for 9bit support
 
 */
 #include <SPI.h>
 #include <ESP8266WiFi.h>
 #include <WiFiUdp.h>
 #include <z21.h>
-#include <RS485SoftwareSerial.h>
 #include <XpressNet.h>
 
 // Debug variants:
@@ -25,18 +20,49 @@
 //#include <SoftwareDEBUGSERIAL.h>
 //#define DEBUGSERIAL SoftwareSerial(1,2);
 
+// ---------------------------------------------------------------------
+// WiFi settings
+// ---------------------------------------------------------------------
 // WiFi SSID to connect to
-const char* ssid     = "AndroidAP-n3t";
+const char* ssid = "n3t";
 // WiFi network password
-const char* password = "piwz2712";
+const char* password = "aturiociv";
 // Time to wait for WiFi to connect (number of seconds * 10)
 const byte connectionTimer = 300; // default 300 = 30 seconds
 
-#define Z21_UDP_TX_MAX_SIZE 64
-unsigned char packetBuffer[Z21_UDP_TX_MAX_SIZE];
+// ---------------------------------------------------------------------
+// esp8266 settings
+// ---------------------------------------------------------------------
+// esp8266 led pin (if one is available)
+#define ESP8266_LED 5 // default pin 5 for sparkfun WiFi Shield
 
+// ---------------------------------------------------------------------
+// RS485 shield settings
+// ---------------------------------------------------------------------
+#define RS485_TX_PIN 4
+#define RS485_RX_PIN 2
+#define RS485_TXRX_PIN 12
+
+// ---------------------------------------------------------------------
+// XpressNet settings
+// ---------------------------------------------------------------------
+byte XNetAddress = 30;
+
+// ---------------------------------------------------------------------
+// z21 settings
+// ---------------------------------------------------------------------
+#define Z21_UDP_TX_MAX_SIZE 64
+// z21 UDP port to listen on
+#define z21Port 21105
+
+// ---------------------------------------------------------------------
+// general settings
+// ---------------------------------------------------------------------
 //Total number of storred IP address (clients)
 #define maxIP 20
+
+
+
 // IP structure
 typedef struct
 {
@@ -50,15 +76,10 @@ listofIP mem[maxIP];
 // number of stored IPs
 byte storedIP = 0;
 
-
+unsigned char packetBuffer[Z21_UDP_TX_MAX_SIZE];
 WiFiUDP Udp;
 z21Class z21;
-
-// esp8266 led pin (if one is available)
-#define ESP8266_LED 5 // default pin 5 for sparkfun WiFi Shield
-// z21 UDP port to listen on
-#define z21Port 21105
-
+XpressNetClass XpressNet;
 
 void setup() {
   // put your setup code here, to run once:
@@ -66,7 +87,7 @@ void setup() {
   DEBUGSERIAL.begin(115200);
   DEBUGSERIAL.println();
   DEBUGSERIAL.println();
-  DEBUGSERIAL.println(F("z21 passthrough starting"));
+  DEBUGSERIAL.println(F("z21 XpressNet passthrough starting"));
 #endif
 
 #if defined(ESP8266_LED)
@@ -111,13 +132,17 @@ void setup() {
     return;
   }
 
+  XpressNet.start(XNetAddress, RS485_TXRX_PIN);
+
   Udp.begin(z21Port);
 
   z21.setPower(csNormal);
 }
 
 void loop() {
-
+  // Receive XpressNet packets
+  XpressNet.receive();
+  
   // Receive UDP packets and send them to z21 library
   if (Udp.parsePacket() > 0) { //packetSize
     Udp.read(packetBuffer, Z21_UDP_TX_MAX_SIZE); // read the packet into packetBufffer
@@ -143,10 +168,6 @@ byte addIP (byte ip0, byte ip1, byte ip2, byte ip3) {
   storedIP++;
   return storedIP;
 }
-
-
-
-
 
 
 
@@ -211,6 +232,7 @@ void notifyz21LocoSpeed(uint16_t Adr, uint8_t speed, uint8_t steps)
 #if defined(DEBUGSERIAL)
   DEBUGSERIAL.printf("notifyz21LocoSpeed %d %d %d\r\n", Adr, speed, steps);
 #endif
+XpressNet.setLocoDrive((Adr >> 8) & 0x3F, (Adr & 0xFF), steps, speed);
 }
 
 //--------------------------------------------------------------------------------------------
@@ -283,9 +305,9 @@ void notifyz21CVPOMWRITEBYTE(uint16_t Adr, uint16_t cvAdr, uint8_t value)
 //--------------------------------------------------------------------------------------------
 void notifyXNetStatus(uint8_t LedState )
 {
-#if defined(DEBUGSERIAL)
-  DEBUGSERIAL.printf("notifyXNetStatus %d\r\n", LedState);
-#endif
+//#if defined(DEBUGSERIAL)
+//  DEBUGSERIAL.printf("notifyXNetStatus %d\r\n", LedState);
+//#endif
 }
 
 //--------------------------------------------------------------------------------------------
