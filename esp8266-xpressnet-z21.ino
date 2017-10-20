@@ -116,6 +116,9 @@ void loop()
   // Receive XpressNet packets
   XpressNet.receive();
 
+  // Receive S88 data
+  notifyS88Data();
+
   // Receive UDP packets and send them to z21 library
   if (Udp.parsePacket() > 0)
   {                                              //packetSize
@@ -154,6 +157,7 @@ void notifyz21RailPower(uint8_t State)
   DEBUGSERIAL.print("Power: ");
   DEBUGSERIAL.println(State, HEX);
 #endif
+  XpressNet.setPower(State);
 }
 
 //--------------------------------------------------------------------------------------------
@@ -178,6 +182,28 @@ void notifyz21EthSend(uint8_t client, uint8_t *data)
   }
 }
 
+void notifyz21getSystemInfo(uint8_t client)
+{
+  byte data[16];
+  data[0] = 0x00;  //MainCurrent mA
+  data[1] = 0x00;  //MainCurrent mA
+  data[2] = 0x00;  //ProgCurrent mA
+  data[3] = 0x00;  //ProgCurrent mA        
+  data[4] = 0x00;  //FilteredMainCurrent
+  data[5] = 0x00;  //FilteredMainCurrent
+  data[6] = 0x00;  //Temperature
+  data[7] = 0x20;  //Temperature
+  data[8] = 0x0F;  //SupplyVoltage
+  data[9] = 0x00;  //SupplyVoltage
+  data[10] = 0x00;  //VCCVoltage
+  data[11] = 0x03;  //VCCVoltage
+  data[12] = XpressNet.getPower();  //CentralState
+  data[13] = 0x00;  //CentralStateEx
+  data[14] = 0x00;  //reserved
+  data[15] = 0x00;  //reserved
+  notifyz21EthSend(client, data);
+}
+
 //--------------------------------------------------------------------------------------------
 void notifyz21S88Data(uint8_t gIndex)
 {
@@ -185,6 +211,7 @@ void notifyz21S88Data(uint8_t gIndex)
 #if defined(DEBUGSERIAL)
   DEBUGSERIAL.printf("notifyz21S88Data %d\r\n", gIndex);
 #endif
+  // must cache the last sent S88 data and resend it as someone requested it
 }
 
 //--------------------------------------------------------------------------------------------
@@ -193,7 +220,9 @@ void notifyz21getLocoState(uint16_t Adr, bool bc)
 #if defined(DEBUGSERIAL)
   DEBUGSERIAL.printf("notifyz21getLocoState %d\r\n", Adr);
 #endif
-  //void setLocoStateFull (int Adr, byte steps, byte speed, byte F0, byte F1, byte F2, byte F3, bool bc);
+  XpressNet.getLocoInfo(highByte(Adr), lowByte(Adr));
+  XpressNet.getLocoFunc(highByte(Adr), lowByte(Adr)); 
+  // XpressNet.getLocoStateFull(highByte(Adr), lowByte(Adr), bc);
 }
 
 void notifyz21LocoFkt(uint16_t Adr, uint8_t type, uint8_t fkt)
@@ -201,6 +230,7 @@ void notifyz21LocoFkt(uint16_t Adr, uint8_t type, uint8_t fkt)
 #if defined(DEBUGSERIAL)
   DEBUGSERIAL.printf("notifyz21LocoFkt %d %d %d\r\n", Adr, type, fkt);
 #endif
+  XpressNet.setLocoFunc(highByte(Adr), lowByte(Adr), type, fkt);
 }
 
 //--------------------------------------------------------------------------------------------
@@ -209,15 +239,20 @@ void notifyz21LocoSpeed(uint16_t Adr, uint8_t speed, uint8_t steps)
 #if defined(DEBUGSERIAL)
   DEBUGSERIAL.printf("notifyz21LocoSpeed %d %d %d\r\n", Adr, speed, steps);
 #endif
-  XpressNet.setLocoDrive((Adr >> 8) & 0x3F, (Adr & 0xFF), steps, speed);
+  // XpressNet.setLocoDrive((Adr >> 8) & 0x3F, (Adr & 0xFF), steps, speed);
+  uint8_t xSteps = 1;
+  if(steps == 128) xSteps = 3;
+  if(steps == 28) xSteps = 2;
+  XpressNet.setLocoDrive(highByte(Adr), lowByte(Adr), xSteps, speed);
 }
 
 //--------------------------------------------------------------------------------------------
 void notifyz21Accessory(uint16_t Adr, bool state, bool active)
 {
 #if defined(DEBUGSERIAL)
-  DEBUGSERIAL.printf("notifyz21Accessory %d\r\n", Adr);
+  DEBUGSERIAL.printf("notifyz21Accessory %d %d %d\r\n", Adr, state, active);
 #endif
+  XpressNet.setTrntPos(highByte(Adr), lowByte(Adr), ((active?1:0) << 3) + (state?1:0));
 }
 
 //--------------------------------------------------------------------------------------------
@@ -227,6 +262,9 @@ uint8_t notifyz21AccessoryInfo(uint16_t Adr)
 #if defined(DEBUGSERIAL)
   DEBUGSERIAL.printf("notifyz21AccessoryInfo %d\r\n", Adr);
 #endif
+  XpressNet.getTrntInfo(highByte(Adr), lowByte(Adr));
+  // we must wait for XpressNet to return this information as z21 lib requires it to send a response
+  // Or should we cache this data ?
   return false;
 }
 
@@ -241,12 +279,12 @@ uint8_t notifyz21LNdispatch(uint8_t Adr2, uint8_t Adr)
 }
 
 //--------------------------------------------------------------------------------------------
-void notifyz21LNSendPacket(uint8_t *data, uint8_t length)
-{
-#if defined(DEBUGSERIAL)
-  DEBUGSERIAL.println("notifyz21LNSendPacket");
-#endif
-}
+// void notifyz21LNSendPacket(uint8_t *data, uint8_t length)
+// {
+// #if defined(DEBUGSERIAL)
+//   DEBUGSERIAL.println("notifyz21LNSendPacket");
+// #endif
+// }
 
 //--------------------------------------------------------------------------------------------
 void notifyz21CVREAD(uint8_t cvAdrMSB, uint8_t cvAdrLSB)
@@ -254,6 +292,7 @@ void notifyz21CVREAD(uint8_t cvAdrMSB, uint8_t cvAdrLSB)
 #if defined(DEBUGSERIAL)
   DEBUGSERIAL.printf("notifyz21CVREAD %d %d\r\n", cvAdrMSB, cvAdrLSB);
 #endif
+  XpressNet.readCVMode(cvAdrLSB+1);
 }
 
 //--------------------------------------------------------------------------------------------
@@ -262,6 +301,7 @@ void notifyz21CVWRITE(uint8_t cvAdrMSB, uint8_t cvAdrLSB, uint8_t value)
 #if defined(DEBUGSERIAL)
   DEBUGSERIAL.printf("notifyz21CVWRITE %d %d %d\r\n", cvAdrMSB, cvAdrLSB, value);
 #endif
+  XpressNet.writeCVMode(cvAdrLSB+1, value);
 }
 
 //--------------------------------------------------------------------------------------------
@@ -270,6 +310,7 @@ void notifyz21CVPOMWRITEBYTE(uint16_t Adr, uint16_t cvAdr, uint8_t value)
 #if defined(DEBUGSERIAL)
   DEBUGSERIAL.printf("notifyz21CVPOMWRITEBYTE %d %d %d\r\n", Adr, cvAdr, value);
 #endif
+
 }
 
 //--------------------------------------------------------------------------------------------
