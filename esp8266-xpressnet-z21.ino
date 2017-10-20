@@ -1,5 +1,5 @@
 /*
-   Aim of this project is to create a z21 to xpressnet interface on esp8266
+   Aim of this project is to create a z21 to XpressNet interface on esp8266
 
    Credits:
    - z21 lib created by Philipp Gahtow http://pgahtow.de/wiki/index.php?title=Z21_mobile but modifed to include support for esp8266 EEPROM
@@ -8,10 +8,47 @@
 
 */
 #include <SPI.h>
+
+// WiFi ESP library
 #include <ESP8266WiFi.h>
+
+// WiFiManager auto-configuration library
+#include <DNSServer.h>            //Local DNS Server used for redirecting all requests to the configuration portal
+#include <ESP8266WebServer.h>     //Local WebServer used to serve the configuration portal
+#include <WiFiManager.h>          //https://github.com/tzapu/WiFiManager WiFi Configuration Magic
+
+// WiFi UDP library
 #include <WiFiUdp.h>
+
+// XpressNet library settings
+// RS485 interface
+#define XNetRS485_TX 4    // RS485 TX pin
+#define XNetRS485_RX 2    // RS485 RX pin
+#define RS485_TXRX_PIN 12 // RS485 TX control pin (can be ommited for auto TX control)
+// XpressNet settings
+byte XNetAddress = 30;    // The XpressNet address of this device
+#include <esp8266-XpressNet.h>
+
+// Z21 library and settings
+#define Z21_UDP_TX_MAX_SIZE 64  // max received UDP packet size
+#define z21Port 21105     // z21 UDP port to listen on
 #include <z21.h>
-#include <XpressNet.h>
+
+// S88 settings
+#define S88DataPin 15       //S88 Data IN pin
+#define S88ClkPin 13        //S88 Clock pin
+#define S88PSPin 12         //S88 PS/LOAD pin
+#define S88ResetPin 14      //S88 Reset pin
+byte S88Module = 2;         // Number of S88 modules. Each module has 8 inputs so a 16 inputs board is composed of 2 modules
+
+extern "C" {
+  #include "user_interface.h"
+}
+os_timer_t s88Timer;
+uint8_t S88RCount = 0;    //Lesezähler 0-39 Zyklen
+uint8_t S88RMCount = 0;   //Lesezähler Modul-Pin
+char S88sendon = '0';        //Bit Änderung
+byte data[62];     //Zustandsspeicher für 62x 8fach Modul
 
 // Debug variants:
 // 1. Via hardware serial
@@ -20,66 +57,26 @@
 //#include <SoftwareDEBUGSERIAL.h>
 //#define DEBUGSERIAL SoftwareSerial(1,2);
 
-// ---------------------------------------------------------------------
-// WiFi settings
-// ---------------------------------------------------------------------
-// WiFi SSID to connect to
-const char* ssid = "n3t";
-// WiFi network password
-const char* password = "aturiociv";
-// Time to wait for WiFi to connect (number of seconds * 10)
-const byte connectionTimer = 300; // default 300 = 30 seconds
-
-// ---------------------------------------------------------------------
-// esp8266 settings
-// ---------------------------------------------------------------------
-// esp8266 led pin (if one is available)
-#define ESP8266_LED 5 // default pin 5 for sparkfun WiFi Shield
-
-// ---------------------------------------------------------------------
-// RS485 shield settings
-// ---------------------------------------------------------------------
-#define RS485_TX_PIN 4
-#define RS485_RX_PIN 2
-#define RS485_TXRX_PIN 12
-
-// ---------------------------------------------------------------------
-// XpressNet settings
-// ---------------------------------------------------------------------
-byte XNetAddress = 30;
-
-// ---------------------------------------------------------------------
-// z21 settings
-// ---------------------------------------------------------------------
-#define Z21_UDP_TX_MAX_SIZE 64
-// z21 UDP port to listen on
-#define z21Port 21105
-
-// ---------------------------------------------------------------------
-// general settings
-// ---------------------------------------------------------------------
-//Total number of storred IP address (clients)
-#define maxIP 20
-
-
-
-// IP structure
-typedef struct
+// IP settings
+#define maxIP 20      //Total number of storred IP address (clients)
+typedef struct        // Structure to hold IP's and ports
 {
   byte IP0;
   byte IP1;
   byte IP2;
   byte IP3;
+  uint16_t port;
 } listofIP;
-// IP storage
-listofIP mem[maxIP];
-// number of stored IPs
-byte storedIP = 0;
+listofIP mem[maxIP];  // IP storage
+byte storedIP = 0;    // number of currently stored IPs
 
+// Init local variables
 unsigned char packetBuffer[Z21_UDP_TX_MAX_SIZE];
 WiFiUDP Udp;
 z21Class z21;
 XpressNetClass XpressNet;
+
+
 
 void setup() {
   // put your setup code here, to run once:
@@ -87,55 +84,30 @@ void setup() {
   DEBUGSERIAL.begin(115200);
   DEBUGSERIAL.println();
   DEBUGSERIAL.println();
-  DEBUGSERIAL.println(F("z21 XpressNet passthrough starting"));
+  DEBUGSERIAL.println(F("z21 XpressNet emulation starting"));
 #endif
 
-#if defined(ESP8266_LED)
-  // Turn off LED
-  pinMode(ESP8266_LED, OUTPUT);
-  digitalWrite(ESP8266_LED, HIGH);
-  boolean led = false;
-#endif
+  // Start WiFi
+  WiFiManager wifiManager;
+  wifiManager.autoConnect("Z21-Config");
 
-  byte counter = 0;
-  WiFi.begin(ssid, password);
-
-  while (WiFi.status() != WL_CONNECTED && counter < connectionTimer) {
-    counter++;
-#if defined(ESP8266_LED)
-    if (led) {
-      digitalWrite(ESP8266_LED, HIGH);
-      led = false;
-    } else {
-      digitalWrite(ESP8266_LED, LOW);
-      led = true;
-    }
-#endif
-    delay(100);
-  }
-
-  if (WiFi.status() == WL_CONNECTED) {
-#if defined(ESP8266_LED)
-    digitalWrite(ESP8266_LED, LOW);
-#endif
 #if defined(DEBUGSERIAL)
     DEBUGSERIAL.println(F("WiFi connected"));
     DEBUGSERIAL.print(F("Local IP: ")); DEBUGSERIAL.println(WiFi.localIP());
 #endif
-  } else {
-#if defined(ESP8266_LED)
-    digitalWrite(ESP8266_LED, HIGH);
-#endif
-#if defined(DEBUGSERIAL)
-    DEBUGSERIAL.println(F("Error: cannot connect to WiFi"));
-#endif
-    return;
-  }
 
+  // Start XpressNet
+#if defined(RS485_TXRX_PIN)
   XpressNet.start(XNetAddress, RS485_TXRX_PIN);
+#else
+  XpressNet.start(XNetAddress);
+#endif
 
+  // Start S88
+  SetupS88();
+
+  // Start z21 emulation
   Udp.begin(z21Port);
-
   z21.setPower(csNormal);
 }
 
@@ -147,13 +119,13 @@ void loop() {
   if (Udp.parsePacket() > 0) { //packetSize
     Udp.read(packetBuffer, Z21_UDP_TX_MAX_SIZE); // read the packet into packetBufffer
     IPAddress remote = Udp.remoteIP();
-    z21.receive(addIP(remote[0], remote[1], remote[2], remote[3]), packetBuffer);
+    z21.receive(addIP(remote[0], remote[1], remote[2], remote[3], Udp.remotePort()), packetBuffer);
   }
 
 }
 
 // Store IP in list and return it's index
-byte addIP (byte ip0, byte ip1, byte ip2, byte ip3) {
+byte addIP (byte ip0, byte ip1, byte ip2, byte ip3, uint16_t port) {
   //suche ob IP schon vorhanden?
   for (byte i = 0; i < storedIP; i++) {
     if (mem[i].IP0 == ip0 && mem[i].IP1 == ip1 && mem[i].IP2 == ip2 && mem[i].IP3 == ip3)
@@ -165,6 +137,7 @@ byte addIP (byte ip0, byte ip1, byte ip2, byte ip3) {
   mem[storedIP].IP1 = ip1;
   mem[storedIP].IP2 = ip2;
   mem[storedIP].IP3 = ip3;
+  mem[storedIP].port = port;
   storedIP++;
   return storedIP;
 }
@@ -188,25 +161,25 @@ void notifyz21EthSend(uint8_t client, uint8_t *data)
   if (client == 0) { //all stored
     for (byte i = 0; i < storedIP; i++) {
       IPAddress ip(mem[i].IP0, mem[i].IP1, mem[i].IP2, mem[i].IP3);
-      Udp.beginPacket(ip, Udp.remotePort());    //Broadcast
+      Udp.beginPacket(ip, mem[i].port);    //Broadcast
       Udp.write(data, data[0]);
       Udp.endPacket();
     }
   }
   else {
     IPAddress ip(mem[client - 1].IP0, mem[client - 1].IP1, mem[client - 1].IP2, mem[client - 1].IP3);
-    Udp.beginPacket(ip, Udp.remotePort());    //no Broadcast
+    Udp.beginPacket(ip, mem[client - 1].port);    //no Broadcast
     Udp.write(data, data[0]);
     Udp.endPacket();
   }
 }
 
 //--------------------------------------------------------------------------------------------
-void notifyz21S88Data()
+void notifyz21S88Data(uint8_t gIndex)
 {
   //z21.setS88Data (datasend);  //Send back state of S88 Feedback
 #if defined(DEBUGSERIAL)
-  DEBUGSERIAL.println(F("notifyz21S88Data"));
+  DEBUGSERIAL.printf("notifyz21S88Data %d\r\n", gIndex);
 #endif
 }
 
@@ -365,3 +338,98 @@ void notifyTrnt(uint8_t Adr_High, uint8_t Adr_Low, uint8_t Pos)
   DEBUGSERIAL.printf("notifyTrnt %d %d %d\r\n", Adr_High, Adr_Low, Pos);
 #endif
 }
+
+
+
+
+
+
+//--------------------------------------------------------------------------------------------
+// S88 functions
+//--------------------------------------------------------------------------------------------
+void SetupS88() {
+   if (S88Module > 62 || S88Module == 0) { //S88 off!
+     S88Module = 0;
+     return;
+   }
+  
+   os_timer_setfn(&s88Timer, S88Timer, NULL);
+   os_timer_arm(&s88Timer, 1, true);
+  }
+  
+  //-------------------------------------------------------------- 
+  //S88 Timer ISR Routine
+  void S88Timer(void *pArg) {
+   if (S88RCount == 3)    //Load/PS Leitung auf 1, darauf folgt ein Schiebetakt nach 10 ticks!
+     digitalWrite(S88PSPin, HIGH);
+   if (S88RCount == 4)   //Schiebetakt nach 5 ticks und S88Module > 0
+     digitalWrite(S88ClkPin, HIGH);       //1. Impuls
+   if (S88RCount == 5)   //Read Data IN 1. Bit und S88Module > 0
+     S88readData();    //LOW-Flanke während Load/PS Schiebetakt, dann liegen die Daten an
+   if (S88RCount == 9)    //Reset-Plus, löscht die den Paralleleingängen vorgeschaltetetn Latches
+     digitalWrite(S88ResetPin, HIGH);
+   if (S88RCount == 10)    //Ende Resetimpuls
+     digitalWrite(S88ResetPin, LOW);
+   if (S88RCount == 11)    //Ende PS Phase
+     digitalWrite(S88PSPin, LOW);
+   if (S88RCount >= 12 && S88RCount < 10 + (S88Module * 8) * 2) {    //Auslesen mit weiteren Schiebetakt der Latches links
+     if (S88RCount % 2 == 0)      //wechselnder Taktimpuls/Schiebetakt
+       digitalWrite(S88ClkPin, HIGH);  
+     else S88readData();    //Read Data IN 2. bis (Module*8) Bit
+   }
+   S88RCount++;      //Zähler für Durchläufe/Takt
+   if (S88RCount >= 10 + (S88Module * 8) * 2) {  //Alle Module ausgelesen?
+     S88RCount = 0;                    //setzte Zähler zurück
+     S88RMCount = 0;                  //beginne beim ersten Modul von neuem
+     //init der Grundpegel
+     digitalWrite(S88PSPin, LOW);    
+     digitalWrite(S88ClkPin, LOW);
+     digitalWrite(S88ResetPin, LOW);
+     if (S88sendon == 's')  //Änderung erkannt
+       S88sendon = 'i';      //senden
+   }
+   //Capture the current timer value. This is how much error we have due to interrupt latency and the work in this function
+  //  TCNT2 = TCNT2 + TIMER_Time;    //Reload the timer and correct for latency.
+  }
+  
+  // //--------------------------------------------------------------
+  // //Einlesen des Daten-Bit und Vergleich mit vorherigem Durchlauf
+  void S88readData() {
+   digitalWrite(S88ClkPin, LOW);  //LOW-Flanke, dann liegen die Daten an
+   byte Modul = S88RMCount / 8;
+   byte Port = S88RMCount % 8;
+   byte getData = digitalRead(S88DataPin);  //Bit einlesen
+   if (bitRead(data[Modul],Port) != getData) {     //Zustandsänderung Prüfen?
+     bitWrite(data[Modul],Port,getData);          //Bitzustand Speichern
+     S88sendon = 's';  //Änderung vorgenommen. (SET)
+   }
+   S88RMCount++;
+  }
+  
+  // //--------------------------------------------------------------------------------------------
+  void notifyS88Data() {
+   if (S88sendon == 'i' || S88sendon == 'm') {
+     byte MAdr = 1;  //Rückmeldemodul
+     byte datasend[11];  //Array Gruppenindex (1 Byte) & Rückmelder-Status (10 Byte)
+     datasend[0] = 0; //Gruppenindex für Adressen 1 bis 10
+     for(byte m = 0; m < S88Module; m++) {  //Durchlaufe alle aktiven Module im Speicher
+       datasend[MAdr] = data[m];
+       MAdr++;  //Nächste Modul in der Gruppe
+       if (MAdr >= 11) {  //10 Module à 8 Ports eingelesen
+         MAdr = 1;  //beginne von vorn
+        //  EthSend (0x0F, 0x80, datasend, false, 0x02); //RMBUS_DATACHANED
+         z21.setS88Data(datasend);
+         datasend[0]++; //Gruppenindex erhöhen
+       }
+     }
+     if (MAdr < 11) {  //noch unbenutzte Module in der Gruppe vorhanden? Diese 0x00 setzten und dann Melden!
+       while (MAdr < 11) {
+         datasend[MAdr] = 0x00;  //letzten leeren Befüllen
+         MAdr++;   //Nächste Modul in der Gruppe   
+       }
+      //  EthSend (0x0F, 0x80, datasend, false, 0x02); //RMBUS_DATACHANED
+      z21.setS88Data(datasend);
+     }
+     S88sendon = '0';        //Speicher Rücksetzten
+   }
+  }
