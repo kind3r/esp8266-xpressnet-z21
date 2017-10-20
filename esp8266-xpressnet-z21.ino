@@ -337,6 +337,7 @@ void notifyXNetPower(uint8_t State)
 #if defined(DEBUGSERIAL)
   DEBUGSERIAL.printf("notifyXNetPower %d\r\n", State);
 #endif
+  z21.setPower(State);
 }
 
 //--------------------------------------------------------------------------------------------
@@ -348,11 +349,12 @@ void notifyLokFunc(uint8_t Adr_High, uint8_t Adr_Low, uint8_t F2, uint8_t F3)
 }
 
 //--------------------------------------------------------------------------------------------
-void notifyLokAll(uint8_t Adr_High, uint8_t Adr_Low, boolean Busy, uint8_t Steps, uint8_t Speed, uint8_t Direction, uint8_t F0, uint8_t F1, uint8_t F2, uint8_t F3, boolean Req)
+void notifyLokAll(uint8_t Adr_High, uint8_t Adr_Low, boolean Busy, uint8_t Steps, uint8_t Speed, uint8_t Direction, uint8_t F0, uint8_t F1, uint8_t F2, uint8_t F3, boolean bc)
 {
 #if defined(DEBUGSERIAL)
   DEBUGSERIAL.printf("notifyLokAll %d %d %d %d %d %d %d %d %d\r\n", Adr_High, Adr_Low, Steps, Speed, Direction, F0, F1, F2, F3);
 #endif
+  z21.setLocoStateFull(word(Adr_High, Adr_Low), Steps, Speed, F0, F1, F2, F3, bc);
 }
 
 //--------------------------------------------------------------------------------------------
@@ -361,6 +363,11 @@ void notifyCVInfo(uint8_t State)
 #if defined(DEBUGSERIAL)
   DEBUGSERIAL.printf("notifyCVInfo %d\r\n", State);
 #endif
+  if (State == 0x01 || State == 0x02) {
+    z21.setCVNack();
+  } else {
+    // z21.setCVNackSC();
+  }
 }
 
 //--------------------------------------------------------------------------------------------
@@ -369,6 +376,7 @@ void notifyCVResult(uint8_t cvAdr, uint8_t cvData)
 #if defined(DEBUGSERIAL)
   DEBUGSERIAL.printf("notifyCVResult %d %d\r\n", cvAdr, cvData);
 #endif
+  z21.setCVReturn(cvAdr, cvData);
 }
 
 //--------------------------------------------------------------------------------------------
@@ -377,6 +385,7 @@ void notifyTrnt(uint8_t Adr_High, uint8_t Adr_Low, uint8_t Pos)
 #if defined(DEBUGSERIAL)
   DEBUGSERIAL.printf("notifyTrnt %d %d %d\r\n", Adr_High, Adr_Low, Pos);
 #endif
+  z21.setTrntInfo(word(Adr_High, Adr_Low), Pos - 1);
 }
 
 //--------------------------------------------------------------------------------------------
