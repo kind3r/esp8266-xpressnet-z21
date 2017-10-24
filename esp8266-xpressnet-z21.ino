@@ -48,7 +48,7 @@ os_timer_t s88Timer;
 uint8_t S88RCount = 0;  //Lesezähler 0-39 Zyklen
 uint8_t S88RMCount = 0; //Lesezähler Modul-Pin
 char S88sendon = '0';   //Bit Änderung
-byte data[62];          //Zustandsspeicher für 62x 8fach Modul
+byte S88data[62];          //Zustandsspeicher für 62x 8fach Modul
 
 // Debug variants:
 // 1. Via hardware serial
@@ -115,10 +115,10 @@ void loop()
 {
   // Receive XpressNet packets
   XpressNet.receive();
-
+  yield();
   // Receive S88 data
   notifyS88Data();
-
+  yield();
   // Receive UDP packets and send them to z21 library
   if (Udp.parsePacket() > 0)
   {                                              //packetSize
@@ -126,6 +126,7 @@ void loop()
     IPAddress remote = Udp.remoteIP();
     z21.receive(addIP(remote[0], remote[1], remote[2], remote[3], Udp.remotePort()), packetBuffer);
   }
+  yield();
 }
 
 // Store IP in list and return it's index
@@ -452,9 +453,9 @@ void S88readData()
   byte Modul = S88RMCount / 8;
   byte Port = S88RMCount % 8;
   byte getData = digitalRead(S88DataPin); //Bit einlesen
-  if (bitRead(data[Modul], Port) != getData)
+  if (bitRead(S88data[Modul], Port) != getData)
   {                                       //Zustandsänderung Prüfen?
-    bitWrite(data[Modul], Port, getData); //Bitzustand Speichern
+    bitWrite(S88data[Modul], Port, getData); //Bitzustand Speichern
     S88sendon = 's';                      //Änderung vorgenommen. (SET)
   }
   S88RMCount++;
@@ -470,12 +471,12 @@ void notifyS88Data()
     datasend[0] = 0;   //Gruppenindex für Adressen 1 bis 10
     for (byte m = 0; m < S88Module; m++)
     { //Durchlaufe alle aktiven Module im Speicher
-      datasend[MAdr] = data[m];
+      datasend[MAdr] = S88data[m];
 #if defined(DEBUGSERIAL)
       DEBUGSERIAL.print(F("S88 "));
       DEBUGSERIAL.print(m);
       DEBUGSERIAL.print(F(":, "));
-      DEBUGSERIAL.print(data[m], BIN);
+      DEBUGSERIAL.print(S88data[m], BIN);
       DEBUGSERIAL.print(F("; "));
 #endif
       MAdr++; //Nächste Modul in der Gruppe
