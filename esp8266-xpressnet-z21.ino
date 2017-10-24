@@ -24,7 +24,7 @@
 // RS485 interface
 #define XNetRS485_TX 4    // RS485 TX pin
 #define XNetRS485_RX 2    // RS485 RX pin
-#define RS485_TXRX_PIN 12 // RS485 TX control pin (can be ommited for auto TX control)
+#define RS485_TXRX_PIN 5  // RS485 TX control pin (can be ommited for auto TX control)
 // XpressNet settings
 byte XNetAddress = 30; // The XpressNet address of this device
 #include <esp8266-XpressNet.h>
