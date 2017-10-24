@@ -212,6 +212,8 @@ void notifyz21S88Data(uint8_t gIndex)
   DEBUGSERIAL.printf("notifyz21S88Data %d\r\n", gIndex);
 #endif
   // must cache the last sent S88 data and resend it as someone requested it
+  S88sendon = 'm';
+  notifyS88Data();
 }
 
 //--------------------------------------------------------------------------------------------
@@ -469,12 +471,22 @@ void notifyS88Data()
     for (byte m = 0; m < S88Module; m++)
     { //Durchlaufe alle aktiven Module im Speicher
       datasend[MAdr] = data[m];
+#if defined(DEBUGSERIAL)
+      DEBUGSERIAL.print(F("S88 "));
+      DEBUGSERIAL.print(m);
+      DEBUGSERIAL.print(F(":, "));
+      DEBUGSERIAL.print(data[m], BIN);
+      DEBUGSERIAL.print(F("; "));
+#endif
       MAdr++; //Nächste Modul in der Gruppe
       if (MAdr >= 11)
       {           //10 Module à 8 Ports eingelesen
         MAdr = 1; //beginne von vorn
                   //  EthSend (0x0F, 0x80, datasend, false, 0x02); //RMBUS_DATACHANED
         z21.setS88Data(datasend);
+#if defined(DEBUGSERIAL)
+        DEBUGSERIAL.println();
+#endif
         datasend[0]++; //Gruppenindex erhöhen
       }
     }
@@ -487,7 +499,10 @@ void notifyS88Data()
       }
       //  EthSend (0x0F, 0x80, datasend, false, 0x02); //RMBUS_DATACHANED
       z21.setS88Data(datasend);
-    }
+#if defined(DEBUGSERIAL)
+      DEBUGSERIAL.println();
+#endif
+  }
     S88sendon = '0'; //Speicher Rücksetzten
   }
 }
