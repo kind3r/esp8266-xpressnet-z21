@@ -1,5 +1,5 @@
 /*
-   Aim of this project is to create a z21 to XpressNet interface on esp8266
+   Aim of this project is to create a z21 command station on esp8266
 
    Credits:
    - z21 lib created by Philipp Gahtow http://pgahtow.de/wiki/index.php?title=Z21_mobile but modifed to include support for esp8266 EEPROM
@@ -7,6 +7,18 @@
    - SoftwareSerial lib for esp8266 https://github.com/plerup/espsoftwareserial modified into https://github.com/kind3r/espsoftwareRS485 for 9bit support
 
 */
+
+// RS485 interface
+// #define XNetRS485_TX 4   // RS485 TX pin
+// #define XNetRS485_RX 2   // RS485 RX pin
+// #define RS485_TXRX_PIN 5 // RS485 TX control pin (can be ommited for auto TX control)
+
+// S88n interface
+// #define S88DataPin 15 //S88 Data IN
+// #define S88ClkPin 13 //S88 Clock
+// #define S88PSPin 12 //S88 PS/LOAD
+// #define S88ResetPin 14 //S88 Reset
+
 #include <SPI.h>
 
 // WiFi ESP library
@@ -21,11 +33,6 @@
 #include <WiFiUdp.h>
 
 // XpressNet library settings
-// RS485 interface
-#define XNetRS485_TX 4    // RS485 TX pin
-#define XNetRS485_RX 2    // RS485 RX pin
-#define RS485_TXRX_PIN 5  // RS485 TX control pin (can be ommited for auto TX control)
-// XpressNet settings
 byte XNetAddress = 30; // The XpressNet address of this device
 #include <esp8266-XpressNet.h>
 
@@ -35,20 +42,8 @@ byte XNetAddress = 30; // The XpressNet address of this device
 #include <z21.h>
 
 // S88 settings
-#define S88DataPin 15  //S88 Data IN pin
-#define S88ClkPin 13   //S88 Clock pin
-#define S88PSPin 12    //S88 PS/LOAD pin
-#define S88ResetPin 14 //S88 Reset pin
-byte S88Module = 2;    // Number of S88 modules. Each module has 8 inputs so a 16 inputs board is composed of 2 modules
-
-extern "C" {
-#include "user_interface.h"
-}
-os_timer_t s88Timer;
-uint8_t S88RCount = 0;  //Lesezähler 0-39 Zyklen
-uint8_t S88RMCount = 0; //Lesezähler Modul-Pin
-char S88sendon = '0';   //Bit Änderung
-byte S88data[62];          //Zustandsspeicher für 62x 8fach Modul
+#include <esp8266-S88n.h>
+byte S88Modules = 2; // number of S88 8 port modules
 
 // Debug variants:
 // 1. Via hardware serial
@@ -75,10 +70,13 @@ unsigned char packetBuffer[Z21_UDP_TX_MAX_SIZE];
 WiFiUDP Udp;
 z21Class z21;
 XpressNetClass XpressNet;
+S88nClass S88;
 
+//--------------------------------------------------------------------------------------------
+// Setup
+//--------------------------------------------------------------------------------------------
 void setup()
 {
-// put your setup code here, to run once:
 #if defined(DEBUGSERIAL)
   DEBUGSERIAL.begin(115200);
   DEBUGSERIAL.println();
@@ -103,21 +101,24 @@ void setup()
   XpressNet.start(XNetAddress);
 #endif
 
-  // Start S88
-  SetupS88();
+  // Start S88 with 2 modules
+  S88.start(S88Modules);
 
   // Start z21 emulation
   Udp.begin(z21Port);
   z21.setPower(csNormal);
 }
 
+//--------------------------------------------------------------------------------------------
+// Main loop
+//--------------------------------------------------------------------------------------------
 void loop()
 {
   // Receive XpressNet packets
   XpressNet.receive();
   yield();
   // Receive S88 data
-  notifyS88Data();
+  S88.checkS88Data();
   yield();
   // Receive UDP packets and send them to z21 library
   if (Udp.parsePacket() > 0)
@@ -186,35 +187,34 @@ void notifyz21EthSend(uint8_t client, uint8_t *data)
 void notifyz21getSystemInfo(uint8_t client)
 {
   byte data[16];
-  data[0] = 0x00;  //MainCurrent mA
-  data[1] = 0x00;  //MainCurrent mA
-  data[2] = 0x00;  //ProgCurrent mA
-  data[3] = 0x00;  //ProgCurrent mA        
-  data[4] = 0x00;  //FilteredMainCurrent
-  data[5] = 0x00;  //FilteredMainCurrent
-  data[6] = 0x00;  //Temperature
-  data[7] = 0x20;  //Temperature
-  data[8] = 0x0F;  //SupplyVoltage
-  data[9] = 0x00;  //SupplyVoltage
-  data[10] = 0x00;  //VCCVoltage
-  data[11] = 0x03;  //VCCVoltage
-  data[12] = XpressNet.getPower();  //CentralState
-  data[13] = 0x00;  //CentralStateEx
-  data[14] = 0x00;  //reserved
-  data[15] = 0x00;  //reserved
+  data[0] = 0x00;                  //MainCurrent mA
+  data[1] = 0x00;                  //MainCurrent mA
+  data[2] = 0x00;                  //ProgCurrent mA
+  data[3] = 0x00;                  //ProgCurrent mA
+  data[4] = 0x00;                  //FilteredMainCurrent
+  data[5] = 0x00;                  //FilteredMainCurrent
+  data[6] = 0x00;                  //Temperature
+  data[7] = 0x20;                  //Temperature
+  data[8] = 0x0F;                  //SupplyVoltage
+  data[9] = 0x00;                  //SupplyVoltage
+  data[10] = 0x00;                 //VCCVoltage
+  data[11] = 0x03;                 //VCCVoltage
+  data[12] = XpressNet.getPower(); //CentralState
+  data[13] = 0x00;                 //CentralStateEx
+  data[14] = 0x00;                 //reserved
+  data[15] = 0x00;                 //reserved
   notifyz21EthSend(client, data);
 }
 
 //--------------------------------------------------------------------------------------------
 void notifyz21S88Data(uint8_t gIndex)
 {
-//z21.setS88Data (datasend);  //Send back state of S88 Feedback
 #if defined(DEBUGSERIAL)
   DEBUGSERIAL.printf("notifyz21S88Data %d\r\n", gIndex);
 #endif
-  // must cache the last sent S88 data and resend it as someone requested it
-  S88sendon = 'm';
-  notifyS88Data();
+  byte *data;
+  S88.getData(data);
+  z21.setS88Data(data, S88Modules);
 }
 
 //--------------------------------------------------------------------------------------------
@@ -224,7 +224,7 @@ void notifyz21getLocoState(uint16_t Adr, bool bc)
   DEBUGSERIAL.printf("notifyz21getLocoState %d\r\n", Adr);
 #endif
   XpressNet.getLocoInfo(highByte(Adr), lowByte(Adr));
-  XpressNet.getLocoFunc(highByte(Adr), lowByte(Adr)); 
+  XpressNet.getLocoFunc(highByte(Adr), lowByte(Adr));
   // XpressNet.getLocoStateFull(highByte(Adr), lowByte(Adr), bc);
 }
 
@@ -244,8 +244,10 @@ void notifyz21LocoSpeed(uint16_t Adr, uint8_t speed, uint8_t steps)
 #endif
   // XpressNet.setLocoDrive((Adr >> 8) & 0x3F, (Adr & 0xFF), steps, speed);
   uint8_t xSteps = 1;
-  if(steps == 128) xSteps = 3;
-  if(steps == 28) xSteps = 2;
+  if (steps == 128)
+    xSteps = 3;
+  if (steps == 28)
+    xSteps = 2;
   XpressNet.setLocoDrive(highByte(Adr), lowByte(Adr), xSteps, speed);
 }
 
@@ -255,7 +257,7 @@ void notifyz21Accessory(uint16_t Adr, bool state, bool active)
 #if defined(DEBUGSERIAL)
   DEBUGSERIAL.printf("notifyz21Accessory %d %d %d\r\n", Adr, state, active);
 #endif
-  XpressNet.setTrntPos(highByte(Adr), lowByte(Adr), ((active?1:0) << 3) + (state?1:0));
+  XpressNet.setTrntPos(highByte(Adr), lowByte(Adr), ((active ? 1 : 0) << 3) + (state ? 1 : 0));
 }
 
 //--------------------------------------------------------------------------------------------
@@ -295,7 +297,7 @@ void notifyz21CVREAD(uint8_t cvAdrMSB, uint8_t cvAdrLSB)
 #if defined(DEBUGSERIAL)
   DEBUGSERIAL.printf("notifyz21CVREAD %d %d\r\n", cvAdrMSB, cvAdrLSB);
 #endif
-  XpressNet.readCVMode(cvAdrLSB+1);
+  XpressNet.readCVMode(cvAdrLSB + 1);
 }
 
 //--------------------------------------------------------------------------------------------
@@ -304,7 +306,7 @@ void notifyz21CVWRITE(uint8_t cvAdrMSB, uint8_t cvAdrLSB, uint8_t value)
 #if defined(DEBUGSERIAL)
   DEBUGSERIAL.printf("notifyz21CVWRITE %d %d %d\r\n", cvAdrMSB, cvAdrLSB, value);
 #endif
-  XpressNet.writeCVMode(cvAdrLSB+1, value);
+  XpressNet.writeCVMode(cvAdrLSB + 1, value);
 }
 
 //--------------------------------------------------------------------------------------------
@@ -313,7 +315,6 @@ void notifyz21CVPOMWRITEBYTE(uint16_t Adr, uint16_t cvAdr, uint8_t value)
 #if defined(DEBUGSERIAL)
   DEBUGSERIAL.printf("notifyz21CVPOMWRITEBYTE %d %d %d\r\n", Adr, cvAdr, value);
 #endif
-
 }
 
 //--------------------------------------------------------------------------------------------
@@ -366,9 +367,12 @@ void notifyCVInfo(uint8_t State)
 #if defined(DEBUGSERIAL)
   DEBUGSERIAL.printf("notifyCVInfo %d\r\n", State);
 #endif
-  if (State == 0x01 || State == 0x02) {
+  if (State == 0x01 || State == 0x02)
+  {
     z21.setCVNack();
-  } else {
+  }
+  else
+  {
     // z21.setCVNackSC();
   }
 }
@@ -392,118 +396,9 @@ void notifyTrnt(uint8_t Adr_High, uint8_t Adr_Low, uint8_t Pos)
 }
 
 //--------------------------------------------------------------------------------------------
-// S88 functions
+// S88n library callback functions
 //--------------------------------------------------------------------------------------------
-void SetupS88()
+void notifyS88Data(byte *S88data)
 {
-  if (S88Module > 62 || S88Module == 0)
-  { //S88 off!
-    S88Module = 0;
-    return;
-  }
-
-  os_timer_setfn(&s88Timer, S88Timer, NULL);
-  os_timer_arm(&s88Timer, 1, true);
-}
-
-//--------------------------------------------------------------
-//S88 Timer ISR Routine
-void S88Timer(void *pArg)
-{
-  if (S88RCount == 3) //Load/PS Leitung auf 1, darauf folgt ein Schiebetakt nach 10 ticks!
-    digitalWrite(S88PSPin, HIGH);
-  if (S88RCount == 4)              //Schiebetakt nach 5 ticks und S88Module > 0
-    digitalWrite(S88ClkPin, HIGH); //1. Impuls
-  if (S88RCount == 5)              //Read Data IN 1. Bit und S88Module > 0
-    S88readData();                 //LOW-Flanke während Load/PS Schiebetakt, dann liegen die Daten an
-  if (S88RCount == 9)              //Reset-Plus, löscht die den Paralleleingängen vorgeschaltetetn Latches
-    digitalWrite(S88ResetPin, HIGH);
-  if (S88RCount == 10) //Ende Resetimpuls
-    digitalWrite(S88ResetPin, LOW);
-  if (S88RCount == 11) //Ende PS Phase
-    digitalWrite(S88PSPin, LOW);
-  if (S88RCount >= 12 && S88RCount < 10 + (S88Module * 8) * 2)
-  {                         //Auslesen mit weiteren Schiebetakt der Latches links
-    if (S88RCount % 2 == 0) //wechselnder Taktimpuls/Schiebetakt
-      digitalWrite(S88ClkPin, HIGH);
-    else
-      S88readData(); //Read Data IN 2. bis (Module*8) Bit
-  }
-  S88RCount++; //Zähler für Durchläufe/Takt
-  if (S88RCount >= 10 + (S88Module * 8) * 2)
-  {                 //Alle Module ausgelesen?
-    S88RCount = 0;  //setzte Zähler zurück
-    S88RMCount = 0; //beginne beim ersten Modul von neuem
-    //init der Grundpegel
-    digitalWrite(S88PSPin, LOW);
-    digitalWrite(S88ClkPin, LOW);
-    digitalWrite(S88ResetPin, LOW);
-    if (S88sendon == 's') //Änderung erkannt
-      S88sendon = 'i';    //senden
-  }
-  //Capture the current timer value. This is how much error we have due to interrupt latency and the work in this function
-  //  TCNT2 = TCNT2 + TIMER_Time;    //Reload the timer and correct for latency.
-}
-
-// //--------------------------------------------------------------
-// //Einlesen des Daten-Bit und Vergleich mit vorherigem Durchlauf
-void S88readData()
-{
-  digitalWrite(S88ClkPin, LOW); //LOW-Flanke, dann liegen die Daten an
-  byte Modul = S88RMCount / 8;
-  byte Port = S88RMCount % 8;
-  byte getData = digitalRead(S88DataPin); //Bit einlesen
-  if (bitRead(S88data[Modul], Port) != getData)
-  {                                       //Zustandsänderung Prüfen?
-    bitWrite(S88data[Modul], Port, getData); //Bitzustand Speichern
-    S88sendon = 's';                      //Änderung vorgenommen. (SET)
-  }
-  S88RMCount++;
-}
-
-// //--------------------------------------------------------------------------------------------
-void notifyS88Data()
-{
-  if (S88sendon == 'i' || S88sendon == 'm')
-  {
-    byte MAdr = 1;     //Rückmeldemodul
-    byte datasend[11]; //Array Gruppenindex (1 Byte) & Rückmelder-Status (10 Byte)
-    datasend[0] = 0;   //Gruppenindex für Adressen 1 bis 10
-    for (byte m = 0; m < S88Module; m++)
-    { //Durchlaufe alle aktiven Module im Speicher
-      datasend[MAdr] = S88data[m];
-#if defined(DEBUGSERIAL)
-      DEBUGSERIAL.print(F("S88 "));
-      DEBUGSERIAL.print(m);
-      DEBUGSERIAL.print(F(":, "));
-      DEBUGSERIAL.print(S88data[m], BIN);
-      DEBUGSERIAL.print(F("; "));
-#endif
-      MAdr++; //Nächste Modul in der Gruppe
-      if (MAdr >= 11)
-      {           //10 Module à 8 Ports eingelesen
-        MAdr = 1; //beginne von vorn
-                  //  EthSend (0x0F, 0x80, datasend, false, 0x02); //RMBUS_DATACHANED
-        z21.setS88Data(datasend);
-#if defined(DEBUGSERIAL)
-        DEBUGSERIAL.println();
-#endif
-        datasend[0]++; //Gruppenindex erhöhen
-      }
-    }
-    if (MAdr < 11)
-    { //noch unbenutzte Module in der Gruppe vorhanden? Diese 0x00 setzten und dann Melden!
-      while (MAdr < 11)
-      {
-        datasend[MAdr] = 0x00; //letzten leeren Befüllen
-        MAdr++;                //Nächste Modul in der Gruppe
-      }
-      //  EthSend (0x0F, 0x80, datasend, false, 0x02); //RMBUS_DATACHANED
-      z21.setS88Data(datasend);
-#if defined(DEBUGSERIAL)
-      DEBUGSERIAL.println();
-#endif
-  }
-    S88sendon = '0'; //Speicher Rücksetzten
-  }
+  z21.setS88Data(S88data, S88Modules);
 }
