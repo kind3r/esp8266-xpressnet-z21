@@ -37,7 +37,7 @@ byte XNetAddress = 30; // The XpressNet address of this device
 #include <esp8266-XpressNet.h>
 
 // Z21 library and settings
-#define Z21_UDP_TX_MAX_SIZE 64 // max received UDP packet size
+#define Z21_UDP_TX_MAX_SIZE 128 // max received UDP packet size
 #define z21Port 21105          // z21 UDP port to listen on
 #include <z21.h>
 
@@ -102,7 +102,11 @@ void setup()
 #endif
 
   // Start S88 with 2 modules
-  S88.start(S88Modules);
+  if(S88.start(S88Modules)) {
+#if defined(DEBUGSERIAL)
+    DEBUGSERIAL.println(F("Started S88n"));
+#endif    
+  }
 
   // Start z21 emulation
   Udp.begin(z21Port);
@@ -213,7 +217,7 @@ void notifyz21S88Data(uint8_t gIndex)
   DEBUGSERIAL.printf("notifyz21S88Data %d\r\n", gIndex);
 #endif
   byte *data;
-  S88.getData(data);
+  data = S88.getData();
   z21.setS88Data(data, S88Modules);
 }
 
@@ -400,5 +404,8 @@ void notifyTrnt(uint8_t Adr_High, uint8_t Adr_Low, uint8_t Pos)
 //--------------------------------------------------------------------------------------------
 void notifyS88Data(byte *S88data)
 {
+#if defined(DEBUGSERIAL)
+  DEBUGSERIAL.printf("notifyS88Data\r\n");
+#endif  
   z21.setS88Data(S88data, S88Modules);
 }
