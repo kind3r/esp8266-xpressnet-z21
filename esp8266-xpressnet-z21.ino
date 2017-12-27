@@ -32,6 +32,10 @@
 // WiFi UDP library
 #include <WiFiUdp.h>
 
+// WiFi OTA update
+#include <ESP8266mDNS.h>
+#include <ArduinoOTA.h>
+
 // XpressNet library settings
 byte XNetAddress = 30; // The XpressNet address of this device
 #include <esp8266-XpressNet.h>
@@ -94,6 +98,9 @@ void setup()
   DEBUGSERIAL.println(WiFi.localIP());
 #endif
 
+  // Start OTA
+  initOTA();
+
 // Start XpressNet
 #if defined(RS485_TXRX_PIN)
   XpressNet.start(XNetAddress, RS485_TXRX_PIN);
@@ -131,6 +138,9 @@ void loop()
     IPAddress remote = Udp.remoteIP();
     z21.receive(addIP(remote[0], remote[1], remote[2], remote[3], Udp.remotePort()), packetBuffer);
   }
+  yield();
+  // Handle OTA
+  ArduinoOTA.handle();
   yield();
 }
 
@@ -408,4 +418,48 @@ void notifyS88Data(byte *S88data)
   DEBUGSERIAL.printf("notifyS88Data\r\n");
 #endif  
   z21.setS88Data(S88data, S88Modules);
+}
+
+//--------------------------------------------------------------------------------------------
+// OTA Initialization
+//--------------------------------------------------------------------------------------------
+void initOTA() {
+  // Port defaults to 8266
+  // ArduinoOTA.setPort(8266);
+
+  // Hostname defaults to esp8266-[ChipID]
+  // ArduinoOTA.setHostname("myesp8266");
+
+  // Authentication
+  ArduinoOTA.setPassword((const char *)"espupdate");
+
+  ArduinoOTA.onStart([]() {
+#if defined(DEBUGSERIAL)
+    DEBUGSERIAL.println("OTA Start");
+#endif
+  });
+  ArduinoOTA.onEnd([]() {
+#if defined(DEBUGSERIAL)
+    DEBUGSERIAL.println("\nOTA End");
+#endif
+  });
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+#if defined(DEBUGSERIAL)
+    DEBUGSERIAL.printf("OTA Progress: %u%%\r", (progress / (total / 100)));
+#endif
+  });
+  ArduinoOTA.onError([](ota_error_t error) {
+#if defined(DEBUGSERIAL)
+    DEBUGSERIAL.printf("OTA Error[%u]: ", error);
+    if (error == OTA_AUTH_ERROR) DEBUGSERIAL.println("Auth Failed");
+    else if (error == OTA_BEGIN_ERROR) DEBUGSERIAL.println("Begin Failed");
+    else if (error == OTA_CONNECT_ERROR) DEBUGSERIAL.println("Connect Failed");
+    else if (error == OTA_RECEIVE_ERROR) DEBUGSERIAL.println("Receive Failed");
+    else if (error == OTA_END_ERROR) DEBUGSERIAL.println("End Failed");
+#endif
+  });
+  ArduinoOTA.begin();
+#if defined(DEBUGSERIAL)
+  DEBUGSERIAL.println("OTA Init completed");
+#endif
 }
